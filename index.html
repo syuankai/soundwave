@@ -379,6 +379,85 @@
       .control-panel { position: static; }
     }
 
+    /* ── URL Search Box ── */
+    .search-bar {
+      display: flex;
+      align-items: center;
+      gap: 0;
+      background: var(--surface);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 8px;
+      overflow: hidden;
+      transition: border-color 0.2s, box-shadow 0.2s;
+      width: 100%;
+      max-width: 680px;
+      margin: 18px auto 0;
+    }
+    .search-bar:focus-within {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(255,79,31,0.15);
+    }
+    .search-icon {
+      padding: 0 14px;
+      color: var(--muted);
+      font-size: 1rem;
+      flex-shrink: 0;
+      user-select: none;
+    }
+    .search-input {
+      flex: 1;
+      background: none;
+      border: none;
+      outline: none;
+      color: var(--text);
+      font-family: 'Space Mono', monospace;
+      font-size: 0.78rem;
+      padding: 13px 0;
+      min-width: 0;
+    }
+    .search-input::placeholder { color: var(--muted); }
+    .search-btn {
+      background: var(--accent);
+      border: none;
+      color: #fff;
+      font-family: 'Space Mono', monospace;
+      font-size: 0.65rem;
+      letter-spacing: 0.12em;
+      font-weight: 700;
+      padding: 0 18px;
+      height: 100%;
+      cursor: pointer;
+      transition: background 0.2s, opacity 0.2s;
+      flex-shrink: 0;
+      min-height: 46px;
+    }
+    .search-btn:hover { background: #e8401a; }
+    .search-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .search-hint {
+      font-size: 0.6rem;
+      color: var(--muted);
+      text-align: center;
+      margin-top: 7px;
+      letter-spacing: 0.05em;
+    }
+    .search-hint a { color: var(--accent2); text-decoration: none; }
+
+    .search-feedback {
+      font-size: 0.68rem;
+      text-align: center;
+      margin-top: 6px;
+      min-height: 1.2em;
+      transition: color 0.3s;
+    }
+    .search-feedback.ok  { color: #66bb6a; }
+    .search-feedback.err { color: #ef5350; }
+    .search-feedback.loading { color: var(--muted); }
+
+    /* Reload spinner */
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spin { display: inline-block; animation: spin 0.7s linear infinite; }
+
     /* Loading state */
     .loading-msg {
       font-size: 0.75rem;
@@ -419,6 +498,27 @@
       <div class="live-badge">SC PLAYER</div>
     </div>
   </header>
+
+  <!-- URL Search -->
+  <div style="padding: 20px 0 4px;">
+    <div class="search-bar">
+      <span class="search-icon">🔗</span>
+      <input
+        class="search-input"
+        id="search-input"
+        type="url"
+        placeholder="Paste a SoundCloud track or playlist URL…"
+        autocomplete="off"
+        spellcheck="false"
+      />
+      <button class="search-btn" id="search-btn">LOAD</button>
+    </div>
+    <div class="search-hint">
+      e.g. <a href="#" id="hint-example" tabindex="-1">soundcloud.com/artist/track-name</a>
+      &nbsp;·&nbsp; tracks &amp; playlists supported
+    </div>
+    <div class="search-feedback" id="search-feedback"></div>
+  </div>
 
   <main>
     <!-- Left: now playing display -->
@@ -714,7 +814,119 @@ document.getElementById('btn-repeat').addEventListener('click', () => {
   document.getElementById('btn-repeat').classList.toggle('on', state.repeat);
 });
 
-// ─── Playlist ─────────────────────────────────────────────────────────────────
+// ─── URL Loader ──────────────────────────────────────────────────────────────
+function isSoundCloudUrl(url) {
+  try {
+    const u = new URL(url.trim());
+    return u.hostname === 'soundcloud.com' || u.hostname === 'www.soundcloud.com' ||
+           u.hostname === 'm.soundcloud.com' || u.hostname === 'on.soundcloud.com';
+  } catch { return false; }
+}
+
+function setFeedback(msg, type) {
+  const el = document.getElementById('search-feedback');
+  el.textContent = msg;
+  el.className = 'search-feedback' + (type ? ' ' + type : '');
+}
+
+function loadFromUrl(rawUrl) {
+  const url = rawUrl.trim();
+  if (!url) { setFeedback('Please paste a SoundCloud URL.', 'err'); return; }
+  if (!isSoundCloudUrl(url)) { setFeedback('⚠ That doesn\'t look like a SoundCloud URL.', 'err'); return; }
+
+  setFeedback('<span class="spin">⟳</span> Loading…', 'loading');
+  document.getElementById('search-btn').disabled = true;
+
+  // Reset state
+  state.playing = false;
+  state.currentIndex = 0;
+  state.duration = 0;
+  state.position = 0;
+  state.tracks = [];
+  state.totalTracks = 0;
+  document.getElementById('progress-fill').style.width = '0%';
+  document.getElementById('time-current').textContent = '0:00';
+  document.getElementById('time-total').textContent = '0:00';
+  document.getElementById('btn-play').textContent = '▶';
+  document.getElementById('visualizer').classList.remove('playing');
+  document.getElementById('playlist').innerHTML = '';
+  document.getElementById('big-playlist').innerHTML = '';
+  document.getElementById('panel-title').textContent = '—';
+  document.getElementById('panel-artist').textContent = '—';
+  document.getElementById('main-title').childNodes[0].nodeValue = 'Loading…\n';
+  document.getElementById('main-artist').textContent = '';
+  document.getElementById('conn-status').textContent = 'loading…';
+  document.getElementById('conn-status').style.color = 'var(--muted)';
+
+  // Unbind old widget events to avoid ghost callbacks
+  if (widget) {
+    try {
+      widget.unbind(SC.Widget.Events.READY);
+      widget.unbind(SC.Widget.Events.PLAY);
+      widget.unbind(SC.Widget.Events.PAUSE);
+      widget.unbind(SC.Widget.Events.PLAY_PROGRESS);
+      widget.unbind(SC.Widget.Events.FINISH);
+      widget.unbind(SC.Widget.Events.ERROR);
+    } catch(e) {}
+    widget = null;
+  }
+
+  // Build new widget iframe src
+  const encoded = encodeURIComponent(url);
+  const newSrc = `https://w.soundcloud.com/player/?url=${encoded}&color=%23ff4f1f&auto_play=false&hide_related=true&show_comments=false&show_user=true&show_reposts=false&show_teaser=false`;
+
+  // Replace iframe entirely (reassigning src alone sometimes doesn't re-trigger READY)
+  const oldIframe = document.getElementById('sc-iframe');
+  const newIframe = document.createElement('iframe');
+  newIframe.id = 'sc-iframe';
+  newIframe.className = 'sc-iframe-hidden';
+  newIframe.allow = 'autoplay';
+  newIframe.src = newSrc;
+  oldIframe.replaceWith(newIframe);
+
+  // Re-init widget after a short delay so iframe DOM is ready
+  setTimeout(() => {
+    widget = SC.Widget(document.getElementById('sc-iframe'));
+    widget.bind(SC.Widget.Events.READY, () => {
+      onReady();
+      setFeedback('✓ Loaded successfully!', 'ok');
+      setTimeout(() => setFeedback(''), 3000);
+      document.getElementById('search-btn').disabled = false;
+    });
+    widget.bind(SC.Widget.Events.PLAY, onPlay);
+    widget.bind(SC.Widget.Events.PAUSE, onPause);
+    widget.bind(SC.Widget.Events.PLAY_PROGRESS, onProgress);
+    widget.bind(SC.Widget.Events.FINISH, onFinish);
+    widget.bind(SC.Widget.Events.ERROR, () => {
+      onError();
+      setFeedback('✗ Failed to load. Check the URL or try another track.', 'err');
+      document.getElementById('search-btn').disabled = false;
+    });
+  }, 200);
+}
+
+// Wire up search box
+document.getElementById('search-btn').addEventListener('click', () => {
+  loadFromUrl(document.getElementById('search-input').value);
+});
+
+document.getElementById('search-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') loadFromUrl(e.target.value);
+});
+
+// Clear error on typing
+document.getElementById('search-input').addEventListener('input', () => {
+  setFeedback('');
+});
+
+// Fill hint example on click
+document.getElementById('hint-example').addEventListener('click', (e) => {
+  e.preventDefault();
+  document.getElementById('search-input').value = 'https://soundcloud.com/odesza/sets/in-return-1';
+  document.getElementById('search-input').focus();
+});
+
+
 function renderPlaylist() {
   const pl = document.getElementById('playlist');
   pl.innerHTML = '';
