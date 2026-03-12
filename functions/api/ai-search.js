@@ -1,7 +1,7 @@
 /**
  * Cloudflare Pages Function: /api/ai-search
- * Uses Workers AI (llama-3.1-8b-instruct) to convert a song name query
- * into a SoundCloud URL.
+ * Uses Workers AI (llama-3.1-8b-instruct) with structured JSON output
+ * to return up to 10 SoundCloud track suggestions for a query.
  *
  * SETUP REQUIRED in Cloudflare Dashboard:
  *   Workers & Pages → your project → Settings → Bindings → Add
@@ -10,18 +10,11 @@
  */
 
 export async function onRequestPost(context) {
-  // CORS headers
   const headers = {
     'Content-Type': 'application/json',
     'Access-Control-Allow-Origin': '*',
   };
 
-  // Handle preflight
-  if (context.request.method === 'OPTIONS') {
-    return new Response(null, { status: 204, headers });
-  }
-
-  // Check AI binding exists
   if (!context.env.AI) {
     return Response.json(
       { error: 'Workers AI binding not configured. Add an AI binding named "AI" in your Pages project settings.' },
@@ -29,7 +22,6 @@ export async function onRequestPost(context) {
     );
   }
 
-  // Parse request body
   let query = '';
   try {
     const body = await context.request.json();
@@ -42,19 +34,17 @@ export async function onRequestPost(context) {
     return Response.json({ error: 'Query is required.' }, { status: 400, headers });
   }
 
-  // Build prompt for LLM
-  const systemPrompt = `You are a music URL assistant. Your ONLY job is to return a valid SoundCloud URL for the song the user is looking for.
+  const systemPrompt = `You are a SoundCloud music search assistant. Given a song name, artist, or description, return up to 10 real SoundCloud tracks that best match.
 
 Rules:
-- Return ONLY a JSON object, no explanation, no markdown.
-- If you can identify the track, return: {"url": "https://soundcloud.com/artist-slug/track-slug", "title": "Artist - Track Name"}
-- The URL format must be exactly: https://soundcloud.com/{artist-slug}/{track-slug}
-- Use lowercase, hyphens instead of spaces for slugs.
-- If you cannot identify a specific SoundCloud track with confidence, return: {"notFound": true}
-- Do NOT guess or make up URLs. Only return URLs you are confident exist.
-- Do NOT return playlist URLs unless the user specifically asked for a playlist.`;
+- Only include tracks you are confident exist on SoundCloud.
+- SoundCloud URLs must follow: https://soundcloud.com/{artist-slug}/{track-slug}
+- Use lowercase with hyphens for slugs (e.g. "daft-punk", "get-lucky").
+- Include a mix of the most popular/official tracks matching the query.
+- If you cannot find any matching tracks, return an empty array.
+- Do NOT make up or guess URLs. Only include tracks you know exist.`;
 
-  const userMessage = `Find the SoundCloud URL for: "${query}"`;
+  const userMessage = `Find up to 10 SoundCloud tracks for: "${query}"`;
 
   try {
     const aiResponse = await context.env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
@@ -62,55 +52,74 @@ Rules:
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userMessage },
       ],
-      max_tokens: 120,
-      temperature: 0.1, // Low temperature = more deterministic, less hallucination
+      max_tokens: 800,
+      temperature: 0.1,
+      response_format: {
+        type: 'json_schema',
+        json_schema: {
+          type: 'object',
+          properties: {
+            tracks: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  title:  { type: 'string' },
+                  artist: { type: 'string' },
+                  url:    { type: 'string' },
+                },
+                required: ['title', 'artist', 'url'],
+              },
+            },
+          },
+          required: ['tracks'],
+        },
+      },
     });
 
-    // Extract text from response
-    const raw = (aiResponse?.response || aiResponse?.result?.response || '').trim();
+    const raw = (aiResponse?.response || '').trim();
 
     if (!raw) {
       return Response.json({ notFound: true }, { status: 200, headers });
     }
 
-    // Parse JSON from AI response (strip any markdown fences just in case)
-    const cleaned = raw.replace(/```json|```/gi, '').trim();
     let parsed;
     try {
-      // Extract first JSON object in the response
-      const match = cleaned.match(/\{[\s\S]*?\}/);
-      if (!match) throw new Error('No JSON object found');
-      parsed = JSON.parse(match[0]);
+      const cleaned = raw.replace(/```json|```/gi, '').trim();
+      const match = cleaned.match(/\{[\s\S]*\}/);
+      parsed = JSON.parse(match ? match[0] : cleaned);
     } catch {
-      // AI returned something non-JSON
       return Response.json({ notFound: true }, { status: 200, headers });
     }
 
-    // Validate the URL looks like a real SoundCloud track URL
-    if (parsed.notFound) {
+    const rawTracks = parsed?.tracks;
+    if (!Array.isArray(rawTracks) || rawTracks.length === 0) {
       return Response.json({ notFound: true }, { status: 200, headers });
     }
 
-    if (parsed.url) {
-      try {
-        const u = new URL(parsed.url);
-        const isSoundCloud = u.hostname === 'soundcloud.com' || u.hostname === 'www.soundcloud.com';
-        // Must have at least /artist/track (2 path segments)
-        const segments = u.pathname.split('/').filter(Boolean);
-        if (!isSoundCloud || segments.length < 2) {
-          return Response.json({ notFound: true }, { status: 200, headers });
-        }
-      } catch {
-        return Response.json({ notFound: true }, { status: 200, headers });
-      }
+    // Validate and sanitise each track
+    const validTracks = rawTracks
+      .filter(t => t.url && t.title && t.artist)
+      .filter(t => {
+        try {
+          const u = new URL(t.url);
+          const isSC = u.hostname === 'soundcloud.com' || u.hostname === 'www.soundcloud.com';
+          const segments = u.pathname.split('/').filter(Boolean);
+          return isSC && segments.length >= 2;
+        } catch { return false; }
+      })
+      .slice(0, 10)
+      .map(t => ({
+        title:  t.title,
+        artist: t.artist,
+        url:    t.url,
+      }));
 
-      return Response.json(
-        { url: parsed.url, title: parsed.title || parsed.url },
-        { status: 200, headers }
-      );
+    if (validTracks.length === 0) {
+      return Response.json({ notFound: true }, { status: 200, headers });
     }
 
-    return Response.json({ notFound: true }, { status: 200, headers });
+    return Response.json({ tracks: validTracks }, { status: 200, headers });
 
   } catch (err) {
     return Response.json(
@@ -120,10 +129,13 @@ Rules:
   }
 }
 
-// Handle OPTIONS preflight
 export async function onRequestOptions() {
   return new Response(null, {
     status: 204,
-    headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type' },
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type',
+    },
   });
 }
