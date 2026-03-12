@@ -77,17 +77,25 @@ Rules:
       },
     });
 
-    const raw = (aiResponse?.response || '').trim();
-
-    if (!raw) {
-      return Response.json({ notFound: true }, { status: 200, headers });
-    }
-
+    // When response_format is used, Workers AI may return:
+    //   - a parsed object directly in aiResponse.response
+    //   - or a JSON string in aiResponse.response
+    //   - or the object at aiResponse itself
     let parsed;
     try {
-      const cleaned = raw.replace(/```json|```/gi, '').trim();
-      const match = cleaned.match(/\{[\s\S]*\}/);
-      parsed = JSON.parse(match ? match[0] : cleaned);
+      const raw = aiResponse?.response;
+      if (raw === null || raw === undefined) {
+        return Response.json({ notFound: true }, { status: 200, headers });
+      }
+      if (typeof raw === 'object') {
+        // Already parsed object
+        parsed = raw;
+      } else {
+        // String — strip markdown fences and parse
+        const cleaned = String(raw).replace(/```json|```/gi, '').trim();
+        const match = cleaned.match(/\{[\s\S]*\}/);
+        parsed = JSON.parse(match ? match[0] : cleaned);
+      }
     } catch {
       return Response.json({ notFound: true }, { status: 200, headers });
     }
