@@ -683,7 +683,7 @@
 <!-- Hidden SoundCloud iframe (SC Widget API requires an iframe) -->
 <iframe id="sc-iframe"
   class="sc-iframe-hidden"
-  src="https://w.soundcloud.com/player/?url=https%3A//soundcloud.com/discover&color=%23ff4f1f&auto_play=false&hide_related=true&show_comments=false&show_user=true&show_reposts=false&show_teaser=false"
+  src="about:blank"
   allow="autoplay">
 </iframe>
 
@@ -853,18 +853,15 @@ let widget = null;
 
 function initWidget() {
   if (typeof SC === 'undefined') {
-    // SC API not loaded yet, retry
     setTimeout(initWidget, 100);
     return;
   }
-  widget = SC.Widget(iframe);
-  widget.bind(SC.Widget.Events.READY, onReady);
-  widget.bind(SC.Widget.Events.PLAY, onPlay);
-  widget.bind(SC.Widget.Events.PAUSE, onPause);
-  widget.bind(SC.Widget.Events.PLAY_PROGRESS, onProgress);
-  widget.bind(SC.Widget.Events.FINISH, onFinish);
-  widget.bind(SC.Widget.Events.ERROR, onError);
-
+  // Don't init widget yet — wait until user loads a real URL
+  document.getElementById('conn-status').textContent = 'paste a URL';
+  document.getElementById('main-title').childNodes[0].nodeValue = 'Welcome\n';
+  document.getElementById('main-artist').textContent = '';
+  document.getElementById('panel-title').textContent = 'Paste a URL to begin';
+  document.getElementById('panel-artist').textContent = '';
   buildVisualizer();
   buildBigVis();
 }
