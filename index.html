@@ -568,6 +568,93 @@
     .ai-dots span:nth-child(3) { animation-delay: 0.4s; }
     @keyframes ai-blink { 0%,80%,100%{opacity:0} 40%{opacity:1} }
 
+    /* ── AI Results Panel ── */
+    .ai-results {
+      display: none;
+      flex-direction: column;
+      gap: 4px;
+      margin-top: 10px;
+      background: var(--card);
+      border: 1px solid rgba(168,85,247,0.3);
+      border-radius: 10px;
+      overflow: hidden;
+      animation: fadeSlideIn 0.25s ease;
+    }
+    .ai-results.show { display: flex; }
+    @keyframes fadeSlideIn {
+      from { opacity: 0; transform: translateY(-6px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .ai-results-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 14px 8px;
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+    }
+    .ai-results-title {
+      font-size: 0.58rem;
+      letter-spacing: 0.18em;
+      color: #a855f7;
+      text-transform: uppercase;
+    }
+    .ai-results-close {
+      background: none;
+      border: none;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 1rem;
+      line-height: 1;
+      padding: 0 4px;
+      transition: color 0.2s;
+    }
+    .ai-results-close:hover { color: var(--text); }
+    .ai-result-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 14px;
+      cursor: pointer;
+      transition: background 0.15s;
+      border-bottom: 1px solid rgba(255,255,255,0.03);
+    }
+    .ai-result-item:last-child { border-bottom: none; }
+    .ai-result-item:hover { background: rgba(168,85,247,0.1); }
+    .ai-result-num {
+      font-size: 0.6rem;
+      color: #a855f7;
+      width: 18px;
+      flex-shrink: 0;
+      text-align: center;
+      opacity: 0.7;
+    }
+    .ai-result-info { flex: 1; overflow: hidden; }
+    .ai-result-info .t {
+      font-size: 0.8rem;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .ai-result-info .a {
+      font-size: 0.65rem;
+      color: var(--muted);
+      margin-top: 2px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .ai-result-play {
+      font-size: 0.7rem;
+      color: var(--muted);
+      flex-shrink: 0;
+      transition: color 0.15s, transform 0.15s;
+    }
+    .ai-result-item:hover .ai-result-play {
+      color: #a855f7;
+      transform: scale(1.2);
+    }
+
     /* Loading state */
     .loading-msg {
       font-size: 0.75rem;
@@ -596,7 +683,7 @@
 <!-- Hidden SoundCloud iframe (SC Widget API requires an iframe) -->
 <iframe id="sc-iframe"
   class="sc-iframe-hidden"
-  src="https://w.soundcloud.com/player/?url=https%3A//soundcloud.com/odesza/sets/in-return-1&color=%23ff4f1f&auto_play=false&hide_related=true&show_comments=false&show_user=true&show_reposts=false&show_teaser=false"
+  src="https://w.soundcloud.com/player/?url=https%3A//soundcloud.com/discover&color=%23ff4f1f&auto_play=false&hide_related=true&show_comments=false&show_user=true&show_reposts=false&show_teaser=false"
   allow="autoplay">
 </iframe>
 
@@ -650,6 +737,15 @@
       <button class="ai-search-btn" id="ai-search-btn">ASK AI</button>
     </div>
     <div class="ai-feedback" id="ai-feedback"></div>
+
+    <!-- AI Results Panel -->
+    <div class="ai-results" id="ai-results">
+      <div class="ai-results-header">
+        <span class="ai-results-title">✦ AI Results — Click to load</span>
+        <button class="ai-results-close" id="ai-results-close" title="Close">✕</button>
+      </div>
+      <div id="ai-results-list"></div>
+    </div>
   </div>
 
   <main>
@@ -780,11 +876,20 @@ function onReady() {
   document.getElementById('conn-status').style.color = '#66bb6a';
   widget.setVolume(state.volume);
   widget.getSounds(sounds => {
+    if (!sounds || sounds.length === 0) {
+      // No tracks loaded yet — show welcome state
+      document.getElementById('main-title').childNodes[0].nodeValue = 'Welcome\n';
+      document.getElementById('main-artist').textContent = '';
+      document.getElementById('panel-title').textContent = 'Paste a URL to begin';
+      document.getElementById('panel-artist').textContent = '';
+      document.getElementById('loading-msg').classList.remove('show');
+      return;
+    }
     state.tracks = sounds;
     state.totalTracks = sounds.length;
     renderPlaylist();
     renderBigPlaylist();
-    loadCurrentTrack();
+    updateTrackDisplay();
     document.getElementById('loading-msg').classList.remove('show');
   });
 }
@@ -854,14 +959,14 @@ function onProgress(e) {
 }
 
 function onFinish() {
+  if (state.totalTracks === 0) return;
   if (state.repeat) {
     widget.seekTo(0);
     widget.play();
     return;
   }
   if (state.shuffle) {
-    const next = Math.floor(Math.random() * state.totalTracks);
-    state.currentIndex = next;
+    state.currentIndex = Math.floor(Math.random() * state.totalTracks);
   } else {
     state.currentIndex = (state.currentIndex + 1) % state.totalTracks;
   }
@@ -870,9 +975,18 @@ function onFinish() {
 }
 
 function onError(e) {
-  console.error('SC Widget error', e);
+  console.warn('SC Widget error (possibly invalid/private URL)', e);
   document.getElementById('conn-status').textContent = 'error';
   document.getElementById('conn-status').style.color = '#ef5350';
+  document.getElementById('main-title').childNodes[0].nodeValue = 'Load Failed\n';
+  document.getElementById('main-artist').textContent = 'Check the URL or try another track';
+  document.getElementById('panel-title').textContent = 'Load failed';
+  document.getElementById('panel-artist').textContent = '';
+  document.getElementById('btn-play').textContent = '▶';
+  document.getElementById('visualizer').classList.remove('playing');
+  state.playing = false;
+  state.tracks = [];
+  state.totalTracks = 0;
 }
 
 // ─── Controls ────────────────────────────────────────────────────────────────
@@ -884,26 +998,24 @@ document.getElementById('btn-play').addEventListener('click', () => {
 });
 
 document.getElementById('btn-prev').addEventListener('click', () => {
-  if (!widget) return;
+  if (!widget || state.totalTracks === 0) return;
   if (state.position > 2000) {
     widget.seekTo(0);
   } else {
     state.currentIndex = (state.currentIndex - 1 + state.totalTracks) % state.totalTracks;
     widget.skip(state.currentIndex);
-    if (state.playing) widget.play();
   }
   updateTrackDisplay();
 });
 
 document.getElementById('btn-next').addEventListener('click', () => {
-  if (!widget) return;
+  if (!widget || state.totalTracks === 0) return;
   if (state.shuffle) {
     state.currentIndex = Math.floor(Math.random() * state.totalTracks);
   } else {
     state.currentIndex = (state.currentIndex + 1) % state.totalTracks;
   }
   widget.skip(state.currentIndex);
-  if (state.playing) widget.play();
   updateTrackDisplay();
 });
 
@@ -1020,10 +1132,27 @@ function loadFromUrl(rawUrl) {
   setTimeout(() => {
     widget = SC.Widget(document.getElementById('sc-iframe'));
     widget.bind(SC.Widget.Events.READY, () => {
-      onReady();
-      setFeedback('✓ Loaded successfully!', 'ok');
-      setTimeout(() => setFeedback(''), 3000);
-      document.getElementById('search-btn').disabled = false;
+      widget.getSounds(sounds => {
+        if (!sounds || sounds.length === 0) {
+          setFeedback('✗ Track not found or is private/unavailable.', 'err');
+          document.getElementById('search-btn').disabled = false;
+          document.getElementById('conn-status').textContent = 'error';
+          document.getElementById('conn-status').style.color = '#ef5350';
+          document.getElementById('main-title').childNodes[0].nodeValue = 'Load Failed\n';
+          document.getElementById('main-artist').textContent = 'Try another URL';
+          return;
+        }
+        state.tracks = sounds;
+        state.totalTracks = sounds.length;
+        renderPlaylist();
+        renderBigPlaylist();
+        updateTrackDisplay();
+        setFeedback('✓ Loaded! Press ▶ to play.', 'ok');
+        setTimeout(() => setFeedback(''), 4000);
+        document.getElementById('search-btn').disabled = false;
+        document.getElementById('conn-status').textContent = 'ready';
+        document.getElementById('conn-status').style.color = '#66bb6a';
+      });
     });
     widget.bind(SC.Widget.Events.PLAY, onPlay);
     widget.bind(SC.Widget.Events.PAUSE, onPause);
@@ -1165,12 +1294,50 @@ function setAiFeedback(html, type) {
   el.className = 'ai-feedback' + (type ? ' ' + type : '');
 }
 
+function closeAiResults() {
+  document.getElementById('ai-results').classList.remove('show');
+  document.getElementById('ai-results-list').innerHTML = '';
+}
+
+function renderAiResults(tracks, query) {
+  const list = document.getElementById('ai-results-list');
+  list.innerHTML = '';
+
+  tracks.forEach((track, i) => {
+    const item = document.createElement('div');
+    item.className = 'ai-result-item';
+    // Escape to prevent XSS
+    const safeTitle = track.title.replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const safeArtist = track.artist.replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const safeUrl = track.url.replace(/"/g,'&quot;');
+    item.innerHTML = `
+      <div class="ai-result-num">${i + 1}</div>
+      <div class="ai-result-info">
+        <div class="t">${safeTitle}</div>
+        <div class="a">${safeArtist}</div>
+      </div>
+      <div class="ai-result-play">▶</div>
+    `;
+    item.addEventListener('click', () => {
+      // Fill URL box and load
+      document.getElementById('search-input').value = track.url;
+      setAiFeedback(`✓ Loading: <strong>${safeTitle}</strong>`, 'ok');
+      closeAiResults();
+      loadFromUrl(track.url);
+    });
+    list.appendChild(item);
+  });
+
+  document.getElementById('ai-results').classList.add('show');
+}
+
 async function doAiSearch(query) {
   if (!query.trim()) {
     setAiFeedback('Please type a song name or artist.', 'err');
     return;
   }
 
+  closeAiResults();
   const btn = document.getElementById('ai-search-btn');
   btn.disabled = true;
   setAiFeedback(
@@ -1193,20 +1360,15 @@ async function doAiSearch(query) {
       return;
     }
 
-    if (data.notFound) {
-      setAiFeedback('✦ Track not found on SoundCloud. Try a different search.', 'err');
+    if (data.notFound || !data.tracks || data.tracks.length === 0) {
+      setAiFeedback('✦ No results found. Try a different search.', 'err');
       btn.disabled = false;
       return;
     }
 
-    if (data.url) {
-      setAiFeedback('✓ Found: <strong>' + (data.title || data.url) + '</strong> — Loading…', 'ok');
-      // Auto-fill the URL search box and load
-      document.getElementById('search-input').value = data.url;
-      loadFromUrl(data.url);
-    } else {
-      setAiFeedback('✦ Could not find a matching SoundCloud track.', 'err');
-    }
+    setAiFeedback(`✦ Found ${data.tracks.length} result${data.tracks.length > 1 ? 's' : ''} — select one to play`, 'ok');
+    renderAiResults(data.tracks, query);
+
   } catch (err) {
     setAiFeedback('✗ Network error. Make sure the Pages Function is deployed.', 'err');
   }
@@ -1223,6 +1385,11 @@ document.getElementById('ai-search-input').addEventListener('keydown', (e) => {
 });
 
 document.getElementById('ai-search-input').addEventListener('input', () => {
+  setAiFeedback('', '');
+});
+
+document.getElementById('ai-results-close').addEventListener('click', () => {
+  closeAiResults();
   setAiFeedback('', '');
 });
 
